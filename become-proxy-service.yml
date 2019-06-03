@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: become-proxy
+  namespace: default # should be in the same namespace as the pod
+spec:
+  type: NodePort
+  ports:
+    - name: ssh
+      port: 32233
+      targetPort: 32233
+      nodePort: 32233 # this should match the `:port` section of the `ip:port` argument to `connect.sh`.  32233 is the default.
+      protocol: TCP
+  selector:
+    proxy: unique-tag # change this line to match a unique label added to the proxy service
