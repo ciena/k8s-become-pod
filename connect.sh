@@ -33,6 +33,9 @@ for port in "$@"; do
   CMD="$CMD -R $port:localhost:$port"
 done
 
+# ask for sudo here, so we have it later
+sudo -p "[local sudo] Password:" echo >/dev/null
+
 # create identity file with known private key
 # TODO: this is very insecure
 cat >.identity <<EOF
@@ -46,12 +49,13 @@ AAAAAhAN8e/IOUXS8ypBsprs9JeBVtZ+R9Hpz6sHJYvXQrV+gpAAAAGGtoYWdlcm1hQE9O
 TS1LSEFHRVJNQS0wMQECAwQFBgc=
 -----END OPENSSH PRIVATE KEY-----
 EOF
-chmod 400 .identity
+chmod 600 .identity
 
 # connect to the pod, and determine the k8s subnet on a best-effort basis
 # TODO: currently cannot determine range size (/8, /16, /24, etc.) /16 is assumed
 echo -n "Determining subnet... "
-SUBNET=$(ssh -p "$SERVER_PORT" -i "$PWD/.identity" "root@$SERVER_IP" "awk '/^nameserver/{print \$2}' /etc/resolv.conf")/16
+SUBNET=$(ssh -p "$SERVER_PORT" -i "$PWD/.identity" "root@$SERVER_IP" "awk '/^nameserver/{print \$2}' /etc/resolv.conf")
+SUBNET="${SUBNET%.*.*}.0.0/16"
 echo "$SUBNET"
 
 # most of the heavy lifting is done by sshuttle
@@ -64,16 +68,33 @@ fi
 rm -f .identity
 echo "OK"
 
+# make sure forwarding still works when connected to a VPN (tested with Pulse Secure on OSX)
+echo -n "Setup VPN override... "
+if [[ "$OSTYPE" == "linux-gnu" ]]; then
+  sudo -p "[local sudo] Password:" ip route add "$SUBNET" via default
+  # after sshuttle exits, remove the route without requiring sudo
+  sudo -p "[local sudo] Password:" -- sh -c "while [[ -e .sshuttle.pid ]]; do sleep 1; done; ip route del '$SUBNET' via default" &
+  echo "OK"
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+  sudo -p "[local sudo] Password:" route -n add -net "$SUBNET" default >/dev/null
+  # after sshuttle exits, remove the route without requiring sudo
+  sudo -p "[local sudo] Password:" -- sh -c "while [[ -e .sshuttle.pid ]]; do sleep 1; done; route -n delete -net '$SUBNET' default >/dev/null" &
+  echo "OK"
+else
+  echo "SKipped"
+fi
+
 # forward DNS requests made to localhost across the connection
 echo -n "Setup DNS forwarding... "
 socat -T15 udp4-recvfrom:53,reuseaddr,fork tcp:localhost:5353 2>/dev/null &
+dnsForwardPid=$!
 echo "OK"
 
 # setup split DNS
 # send requests for *.cluster.local to localhost
 echo -n "Setup split DNS... "
-sudo -p "[local sudo] password:" mkdir -p /etc/resolver
-sudo chown $(id -u):$(id -g) /etc/resolver # perhaps not the best solution, grant access to the dir so we can delete files later
+sudo -p "[local sudo] Password:" mkdir -p /etc/resolver
+sudo -p "[local sudo] Password:" chown $(id -u):$(id -g) /etc/resolver # perhaps not the best solution, grant access to the dir so we can delete files later
 echo 'nameserver 127.0.0.1' >/etc/resolver/cluster.local
 echo "OK"
 
@@ -81,16 +102,20 @@ echo "All OK"
 
 # wait for sshuttle to exit, or ctrl-c
 trap "echo" INT
-while [[ -e .sshuttle.pid ]]; do sleep 1 || break; done
+while [[ -e .sshuttle.pid ]]; do sleep 2 || break; done
 
 # remove *.cluster.local DNS rules
 echo "Teardown split DNS..."
 rm -f /etc/resolver/cluster.local
 
 echo "Teardown DNS forwarding..."
-kill $(jobs -p) 2>/dev/null || true
-wait $(jobs -p) || true
+kill "$dnsForwardPid" 2>/dev/null || true
+wait "$dnsForwardPid" 2>/dev/null || true
 
 echo "Teardown sshuttle connection..."
 kill $(cat .sshuttle.pid 2>/dev/null) 2>/dev/null || true
-wait $(cat .sshuttle.pid 2>/dev/null) || true
+wait $(cat .sshuttle.pid 2>/dev/null) 2>/dev/null || true
+
+echo "Teardown VPN override..."
+# teardown handled by background process when sshuttle exits
+sleep 1
