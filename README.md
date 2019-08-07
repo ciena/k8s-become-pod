@@ -48,4 +48,4 @@ Incoming TCP traffic is forwarded using ssh port forwarding.
 Outgoing TCP traffic (destined for the k8s subnet) is proxied into the pod by sshuttle, 
 allowing the local machine to reach k8s resources.
 
-DNS traffic is split, all lookups with addresses ending in `*.cluster.local` are sent to the server.
+DNS traffic is split, all lookups with addresses ending in `*.cluster.local` are sent to the k8s DNS service.

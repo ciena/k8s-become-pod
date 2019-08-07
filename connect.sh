@@ -4,25 +4,17 @@
 
 set -eo pipefail
 
+# if the shell exits, close all running jobs
+trap 'kill $(jobs -p) 2>/dev/null' EXIT
+
 # if unknown, print
-if [[ "$1" == "" ]]; then
+if [[ "$1" == "help" || "$1" == "--help" || "$1" == "-h" || "$1" == "h" ]]; then
   echo "usage:"
-  echo "    $0 <server-ip>[:<port>] <ports...>"
+  echo "    $0 <ports...>"
   echo
   echo "    <ports...> ports that should be forwarded from the remote pod to a local server"
   echo "               i.e. - what ports in-dev app listens on"
   exit
-fi
-
-# determine ip:port
-SERVER_IP_PORT="$1"
-shift
-SERVER_IP=(${SERVER_IP_PORT//:/ })
-SERVER_PORT=${SERVER_IP[1]}
-SERVER_IP=${SERVER_IP[0]}
-if [[ "$SERVER_IP_PORT" == "$SERVER_IP" ]]; then
-  SERVER_IP_PORT="$SERVER_IP_PORT:32233"
-  SERVER_PORT=32233
 fi
 
 # port forwarding for DNS requests local -> remote; other ssh config
@@ -51,34 +43,41 @@ TS1LSEFHRVJNQS0wMQECAwQFBgc=
 EOF
 chmod 600 .identity
 
-# connect to the pod, and determine the k8s subnet on a best-effort basis
-# TODO: currently cannot determine range size (/8, /16, /24, etc.) /16 is assumed
-echo -n "Determining subnet... "
-SUBNET=$(ssh -p "$SERVER_PORT" -i "$PWD/.identity" "root@$SERVER_IP" "awk '/^nameserver/{print \$2}' /etc/resolv.conf")
-SUBNET="${SUBNET%.*.*}.0.0/16"
-echo "$SUBNET"
+echo -n "Setup tunnel... "
+kubectl port-forward service/become-proxy 32233 >/dev/null &
+proxyPortForwardPid=$!
+echo "OK"
+
+# determine the cluster & service subnets
+echo -n "Determining subnets... "
+SUBNET=($(kubectl cluster-info dump | grep -E -- '--service-cluster-ip-range=|--cluster-cidr=' | sed -e 's/[^0-9]*\([0-9]*\.[0-9]*\.[0-9]*\.[0-9]*\/[0-9]*\).*/\1/'))
+echo "${SUBNET[0]}" "${SUBNET[1]}"
 
 # most of the heavy lifting is done by sshuttle
 echo -n "Setup sshuttle connection... "
-if ! sshuttle -e "$CMD" -r "root@$SERVER_IP_PORT" --exclude "$SERVER_IP" -D --pidfile=".sshuttle.pid" "$SUBNET"; then
+# TODO might need to --exclude the server IP from forwarding if the k8s subnets include it
+if ! sshuttle -e "$CMD" -r "root@localhost:32233" -D --pidfile=".sshuttle.pid" "${SUBNET[0]}" "${SUBNET[1]}"; then
   rm -f .identity
   echo "Failed to connect."
   exit
 fi
 rm -f .identity
+sshuttlePid="$(cat .sshuttle.pid)"
 echo "OK"
 
 # make sure forwarding still works when connected to a VPN (tested with Pulse Secure on OSX)
 echo -n "Setup VPN override... "
 if [[ "$OSTYPE" == "linux-gnu" ]]; then
-  sudo -p "[local sudo] Password:" ip route add "$SUBNET" via default
+  sudo -p "[local sudo] Password:" ip route add "${SUBNET[0]}" via default
+  sudo -p "[local sudo] Password:" ip route add "${SUBNET[1]}" via default
   # after sshuttle exits, remove the route without requiring sudo
-  sudo -p "[local sudo] Password:" -- sh -c "while [[ -e .sshuttle.pid ]]; do sleep 1; done; ip route del '$SUBNET' via default" &
+  sudo -p "[local sudo] Password:" -- sh -c "while [[ -e .sshuttle.pid ]]; do sleep 1; done; ip route del '${SUBNET[0]}' via default; ip route del '${SUBNET[1]}' via default" &
   echo "OK"
 elif [[ "$OSTYPE" == "darwin"* ]]; then
-  sudo -p "[local sudo] Password:" route -n add -net "$SUBNET" default >/dev/null
+  sudo -p "[local sudo] Password:" route -n add -net "${SUBNET[0]}" default >/dev/null
+  sudo -p "[local sudo] Password:" route -n add -net "${SUBNET[1]}" default >/dev/null
   # after sshuttle exits, remove the route without requiring sudo
-  sudo -p "[local sudo] Password:" -- sh -c "while [[ -e .sshuttle.pid ]]; do sleep 1; done; route -n delete -net '$SUBNET' default >/dev/null" &
+  sudo -p "[local sudo] Password:" -- sh -c "while [[ -e .sshuttle.pid ]]; do sleep 1; done; route -n delete -net '${SUBNET[0]}' default >/dev/null; route -n delete -net '${SUBNET[1]}' default >/dev/null" &
   echo "OK"
 else
   echo "SKipped"
@@ -102,7 +101,7 @@ echo "All OK"
 
 # wait for sshuttle to exit, or ctrl-c
 trap "echo" INT
-while [[ -e .sshuttle.pid ]]; do sleep 2 || break; done
+while [[ -e .sshuttle.pid ]] && kill -0 "$dnsForwardPid" && kill -0 "$proxyPortForwardPid"; do sleep 2 || break; done
 
 # remove *.cluster.local DNS rules
 echo "Teardown split DNS..."
@@ -113,8 +112,12 @@ kill "$dnsForwardPid" 2>/dev/null || true
 wait "$dnsForwardPid" 2>/dev/null || true
 
 echo "Teardown sshuttle connection..."
-kill $(cat .sshuttle.pid 2>/dev/null) 2>/dev/null || true
-wait $(cat .sshuttle.pid 2>/dev/null) 2>/dev/null || true
+kill "$sshuttlePid" 2>/dev/null || true
+wait "$sshuttlePid" 2>/dev/null || true
+
+echo "Teardown tunnel..."
+kill "$proxyPortForwardPid" 2>/dev/null || true
+wait "$proxyPortForwardPid" 2>/dev/null || true
 
 echo "Teardown VPN override..."
 # teardown handled by background process when sshuttle exits

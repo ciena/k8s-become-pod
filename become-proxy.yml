@@ -4,12 +4,10 @@ metadata:
   name: become-proxy
   namespace: default # should be in the same namespace as the replaced pod, and match the proxy pod.  See below ▼
 spec:
-  type: NodePort
   ports:
     - name: ssh
       port: 32233
       targetPort: 32233
-      nodePort: 32233 # this should match the `:port` section of the `ip:port` argument to `connect.sh`.  32233 is the default.
       protocol: TCP
   selector:
     proxy: unique-tag # if there are multiple proxies in the cluster, change this line to match the label of the proxy pod..........................  See below ▼
