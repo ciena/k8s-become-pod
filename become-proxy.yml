@@ -2,28 +2,21 @@ apiVersion: v1
 kind: Service
 metadata:
   name: become-proxy
-  namespace: default # should be in the same namespace as the replaced pod, and match the proxy pod.  See below ▼
 spec:
-  ports:
-    - name: ssh
-      port: 32233
-      targetPort: 32233
-      protocol: TCP
+  clusterIP: None
   selector:
-    proxy: unique-tag # if there are multiple proxies in the cluster, change this line to match the label of the proxy pod..........................  See below ▼
+    proxy: unique-tag
 ---
 apiVersion: apps/v1beta1
 kind: Deployment
 metadata:
   name: become-proxy
-  namespace: default # should be in the same namespace as the replaced pod, and match the service...  See above ▲
 spec:
   replicas: 1
   template:
     metadata:
       labels:
-        app: afrouter # add labels matching the app / pod you would like to develop, so that k8s services can reach the pod.
-        proxy: unique-tag # required for incoming connection from the user's machine, make sure this line to matches the label of the proxy service.  See above ▲
+        proxy: unique-tag
     spec:
       restartPolicy: Always
       containers:

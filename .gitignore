@@ -2,3 +2,4 @@
 .idea/
 .identity
 .sshuttle.pid
+.redirected/
