@@ -17,6 +17,20 @@ if [[ "$1" == "help" || "$1" == "--help" || "$1" == "-h" || "$1" == "h" ]]; then
   exit
 fi
 
+# ask for sudo here, so we have it later
+sudo -p "[local sudo] Password:" echo >/dev/null
+
+# if the proxy pod doesn't exist
+if ! kubectl get --namespace=default deployment "become-proxy" >/dev/null 2>&1; then
+  # create it, and wait for it to start
+  echo -n "Creating proxy pod... "
+  kubectl apply --namespace=default -f become-proxy.yml >/dev/null
+  until kubectl rollout --namespace=default status deployment/become-proxy >/dev/null; do
+    sleep 1
+  done
+  echo "OK"
+fi
+
 # port forwarding for DNS requests local -> remote; other ssh config
 CMD="ssh -o ConnectTimeout=2 -o ConnectionAttempts=1 -o ServerAliveInterval=1 -o ServerAliveCountMax=2 -i $PWD/.identity -L 5353:127.0.0.1:5353"
 # parse remaining parameters as forwarded ports
@@ -24,9 +38,6 @@ for port in "$@"; do
   # port forwarding for ports remote -> local
   CMD="$CMD -R $port:localhost:$port"
 done
-
-# ask for sudo here, so we have it later
-sudo -p "[local sudo] Password:" echo >/dev/null
 
 # create identity file with known private key
 # TODO: this is very insecure
@@ -44,7 +55,7 @@ EOF
 chmod 600 .identity
 
 echo -n "Setup tunnel... "
-kubectl port-forward service/become-proxy 32233 >/dev/null &
+kubectl port-forward --namespace=default deployment/become-proxy 32233 >/dev/null &
 proxyPortForwardPid=$!
 echo "OK"
 
@@ -73,14 +84,14 @@ if [[ "$OSTYPE" == "linux-gnu" ]]; then
   # after sshuttle exits, remove the route without requiring sudo
   sudo -p "[local sudo] Password:" -- sh -c "while [[ -e .sshuttle.pid ]]; do sleep 1; done; ip route del '${SUBNET[0]}' via default; ip route del '${SUBNET[1]}' via default" &
   echo "OK"
-elif [[ "$OSTYPE" == "darwin"* ]]; then
+elif [[ "$OSTYPE" == "skipdarwin"* ]]; then
   sudo -p "[local sudo] Password:" route -n add -net "${SUBNET[0]}" default >/dev/null
   sudo -p "[local sudo] Password:" route -n add -net "${SUBNET[1]}" default >/dev/null
   # after sshuttle exits, remove the route without requiring sudo
   sudo -p "[local sudo] Password:" -- sh -c "while [[ -e .sshuttle.pid ]]; do sleep 1; done; route -n delete -net '${SUBNET[0]}' default >/dev/null; route -n delete -net '${SUBNET[1]}' default >/dev/null" &
   echo "OK"
 else
-  echo "SKipped"
+  echo "Skipped"
 fi
 
 # forward DNS requests made to localhost across the connection
