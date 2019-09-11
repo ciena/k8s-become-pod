@@ -96,7 +96,7 @@ fi
 
 # forward DNS requests made to localhost across the connection
 echo -n "Setup DNS forwarding... "
-socat -T15 udp4-recvfrom:53,reuseaddr,fork tcp:localhost:5353 2>/dev/null &
+socat -T15 udp4-recvfrom:53,reuseaddr,fork tcp:localhost:5353,forever 2>/dev/null &
 dnsForwardPid=$!
 echo "OK"
 
